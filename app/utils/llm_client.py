@@ -1,191 +1,87 @@
-"""
-LLM Client
-Production-ready OpenAI wrapper for Vera AI Challenge.
-
-Features:
-- Singleton client
-- Retry with exponential backoff
-- Timeout
-- JSON output
-- Provider abstraction
-"""
-
-from __future__ import annotations
-
 import json
-import logging
 import os
-import time
-from abc import ABC, abstractmethod
-from typing import Any, Dict
+import urllib.request
+import urllib.error
+from typing import Any, Dict, List, Optional
 
-from openai import APITimeoutError, OpenAI, RateLimitError
-
-logger = logging.getLogger(__name__)
-
-DEFAULT_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-DEFAULT_TIMEOUT = 20
-DEFAULT_RETRIES = 3
-
-
-class BaseLLM(ABC):
-    """Abstract interface for all LLM providers."""
-
-    @abstractmethod
-    def generate(
-        self,
-        *,
-        system_prompt: str,
-        user_prompt: str,
-        temperature: float = 0.2,
-    ) -> Dict[str, Any]:
-        pass
-
-
-class OpenAIProvider(BaseLLM):
-    """OpenAI implementation."""
-
+class LLMClient:
     def __init__(self):
+        self.api_key = os.environ.get("OPENAI_API_KEY", "")
+        self.model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+        self.endpoint = "https://api.openai.com/v1/chat/completions"
+        self.provider = os.environ.get("LLM_PROVIDER", "ollama").lower()
 
-        api_key = os.getenv("OPENAI_API_KEY")
+    def complete(self, messages: List[Dict[str, str]], temperature: float = 0.0, max_tokens: int = 800) -> Optional[str]:
+        """
+        Sends a chat completion request.
+        Tries OpenAI first if provider is 'openai' and key exists, otherwise falls back to local Ollama.
+        """
+        if self.provider == "openai" and self.api_key:
+            body = json.dumps({
+                "model": self.model,
+                "messages": messages,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "response_format": {"type": "json_object"} if "json" in str(messages[-1].get("content", "")).lower() else {"type": "text"}
+            }).encode("utf-8")
 
-        if not api_key:
-            raise RuntimeError(
-                "OPENAI_API_KEY environment variable not found."
+            req = urllib.request.Request(
+                self.endpoint,
+                data=body,
+                headers={
+                    "Authorization": f"Bearer {self.api_key}",
+                    "Content-Type": "application/json"
+                }
             )
 
-        self.client = OpenAI(api_key=api_key)
-
-        self.model = DEFAULT_MODEL
-
-    def generate(
-        self,
-        *,
-        system_prompt: str,
-        user_prompt: str,
-        temperature: float = 0.2,
-    ) -> Dict[str, Any]:
-
-        last_error = None
-
-        for retry in range(DEFAULT_RETRIES):
-
             try:
-
-                response = self.client.chat.completions.create(
-
-                    model=self.model,
-
-                    temperature=temperature,
-
-                    timeout=DEFAULT_TIMEOUT,
-
-                    response_format={
-                        "type": "json_object"
-                    },
-
-                    messages=[
-
-                        {
-                            "role": "system",
-                            "content": system_prompt,
-                        },
-
-                        {
-                            "role": "user",
-                            "content": user_prompt,
-                        },
-
-                    ],
-
-                )
-
-                text = response.choices[0].message.content
-
-                if not text:
-                    raise RuntimeError("Empty response from model.")
-
-                return json.loads(text)
-
-            except (
-                APITimeoutError,
-                RateLimitError,
-                json.JSONDecodeError,
-                RuntimeError,
-            ) as e:
-
-                last_error = e
-
-                logger.warning(
-                    "Retry %s/%s because: %s",
-                    retry + 1,
-                    DEFAULT_RETRIES,
-                    str(e),
-                )
-
-                time.sleep(2 ** retry)
-
+                # Use 20 seconds timeout for OpenAI
+                with urllib.request.urlopen(req, timeout=20) as response:
+                    resp_data = json.loads(response.read().decode("utf-8"))
+                    return resp_data["choices"][0]["message"]["content"]
+            except urllib.error.HTTPError as e:
+                error_msg = e.read().decode("utf-8")
+                print(f"[LLMClient Error] OpenAI HTTP Error {e.code}: {error_msg}")
+                # If 429 or other, fall through to Ollama
             except Exception as e:
+                print(f"[LLMClient Error] OpenAI exception: {e}")
+                # Fall through to Ollama
 
-                logger.exception(e)
+        # Fallback to local Ollama
+        print("[LLMClient] Invoking local Ollama (llama3)...")
+        try:
+            ollama_url = os.environ.get("OLLAMA_URL", "http://localhost:11434/api/chat")
+            ollama_model = os.environ.get("OLLAMA_MODEL", "llama3")
+            
+            # Format system prompt inline if needed
+            ollama_messages = []
+            for msg in messages:
+                ollama_messages.append({
+                    "role": msg["role"],
+                    "content": msg["content"]
+                })
 
-                raise
+            body = json.dumps({
+                "model": ollama_model,
+                "messages": ollama_messages,
+                "stream": False,
+                "options": {
+                    "temperature": temperature,
+                    "num_predict": max_tokens
+                }
+            }).encode("utf-8")
 
-        raise RuntimeError(
-            f"OpenAI failed after retries: {last_error}"
-        )
+            req = urllib.request.Request(
+                ollama_url,
+                data=body,
+                headers={"Content-Type": "application/json"}
+            )
+            
+            with urllib.request.urlopen(req, timeout=25) as response:
+                resp_data = json.loads(response.read().decode("utf-8"))
+                return resp_data["message"]["content"]
+        except Exception as ex:
+            print(f"[LLMClient Error] Ollama fallback failed: {ex}")
+            return None
 
-
-class MockLLM(BaseLLM):
-    """
-    Useful if API key is missing.
-    Allows local development.
-    """
-
-    def generate(
-        self,
-        *,
-        system_prompt: str,
-        user_prompt: str,
-        temperature: float = 0.2,
-    ) -> Dict[str, Any]:
-
-        return {
-            "body": "Hello from Mock LLM.",
-            "cta": "Reply YES",
-            "rationale": "Mock response.",
-            "template_name": None,
-            "template_params": [],
-        }
-
-
-class LLMFactory:
-
-    @staticmethod
-    def create() -> BaseLLM:
-
-        provider = os.getenv(
-            "LLM_PROVIDER",
-            "openai",
-        ).lower()
-
-        if provider == "mock":
-            return MockLLM()
-
-        return OpenAIProvider()
-
-
-_llm_instance: BaseLLM | None = None
-
-
-def get_llm() -> BaseLLM:
-    """
-    Singleton accessor.
-    """
-
-    global _llm_instance
-
-    if _llm_instance is None:
-        _llm_instance = LLMFactory.create()
-
-    return _llm_instance
+llm_client = LLMClient()

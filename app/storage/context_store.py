@@ -19,9 +19,10 @@ class ContextStore:
         with self._lock:
             existing = self._store.get(key)
             if existing is not None:
-                if existing["version"] >= version:
-                    # Version is stale or identical, reject the push
+                if existing["version"] > version:
+                    # Incoming version is strictly older — reject as stale
                     return False, existing["version"]
+                # Same version → idempotent upsert (accepted)
             
             # Store or overwrite with the new version
             self._store[key] = {

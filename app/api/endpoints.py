@@ -1,7 +1,7 @@
 import time
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Response, status
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from app.models.schemas import (
     ContextPushRequest,
@@ -10,9 +10,15 @@ from app.models.schemas import (
     TickRequest,
     TickResponse,
     ReplyRequest,
-    ReplyResponse
+    ReplyResponse,
+    ActionModel
 )
 from app.storage.context_store import store
+from app.services.decision_engine import decision_engine
+from app.services.prompt_composer import PromptComposer
+from app.services.reply_engine import ReplyEngine
+from app.services.conversation_manager import conversation_manager
+from app.utils.suppression_manager import suppression_manager
 
 router = APIRouter()
 START_TIME = time.time()
@@ -74,21 +80,82 @@ async def push_context(body: ContextPushRequest, response: Response):
 async def tick(body: TickRequest):
     """
     Periodic wake-up endpoint.
-    Delegates trigger evaluation to the DecisionEngine (stubbed for now).
+    Evaluates available triggers, sorts by priority, and composes action items.
     """
-    # DecisionEngine integration will go here in Task 3
-    return TickResponse(actions=[])
+    resolved_candidates = decision_engine.evaluate_triggers(body.available_triggers, body.now)
+    actions = []
+
+    for category, merchant, trigger, customer, send_as in resolved_candidates:
+        merchant_id = merchant["merchant_id"]
+        trigger_id = trigger["id"]
+        suppression_key = trigger.get("suppression_key", "")
+        
+        # Build proactive message
+        composition = PromptComposer.compose_proactive(
+            category=category,
+            merchant=merchant,
+            trigger=trigger,
+            customer=customer,
+            send_as=send_as
+        )
+
+        if not composition or not composition.get("body"):
+            continue
+
+        # Enforce unique conversation id
+        conversation_id = f"conv_{merchant_id}_{trigger_id}"
+        
+        # Initialize conversation in tracker
+        conversation_manager.get_or_create_conversation(
+            conversation_id=conversation_id,
+            merchant_id=merchant_id,
+            customer_id=customer.get("customer_id") if customer else None,
+            trigger_id=trigger_id,
+            suppression_key=suppression_key
+        )
+
+        # Log bot message in tracker
+        conversation_manager.add_message(conversation_id, send_as, composition["body"])
+
+        # Record suppression to avoid double sends
+        if suppression_key:
+            suppression_manager.suppress(suppression_key)
+
+        actions.append(ActionModel(
+            conversation_id=conversation_id,
+            merchant_id=merchant_id,
+            customer_id=customer.get("customer_id") if customer else None,
+            send_as=send_as,
+            trigger_id=trigger_id,
+            template_name=composition.get("template_name") or "vera_generic_v1",
+            template_params=composition.get("template_params") or [merchant["identity"].get("owner_first_name", "Partner")],
+            body=composition["body"],
+            cta=composition.get("cta", "open_ended"),
+            suppression_key=suppression_key,
+            rationale=composition.get("rationale", "Proactive notification trigger")
+        ))
+
+    return TickResponse(actions=actions)
 
 @router.post("/v1/reply", response_model=ReplyResponse)
 async def reply(body: ReplyRequest):
     """
-    Receive reply from the merchant or customer.
-    Delegates processing to the ReplyEngine (stubbed for now).
+    Receive reply from the merchant or customer and return the next response.
     """
-    # ReplyEngine integration will go here in Task 5
-    return ReplyResponse(
-        action="send",
-        body="Stub: Hello, I am Vera. I received your message.",
-        cta="open_ended",
-        rationale="Stub response for contract validation."
+    res = ReplyEngine.process_reply(
+        conversation_id=body.conversation_id,
+        merchant_id=body.merchant_id or "",
+        customer_id=body.customer_id,
+        from_role=body.from_role,
+        message=body.message,
+        turn_number=body.turn_number
     )
+    
+    return ReplyResponse(
+        action=res.get("action", "send"),
+        body=res.get("body"),
+        cta=res.get("cta"),
+        wait_seconds=res.get("wait_seconds"),
+        rationale=res.get("rationale", "Advanced conversation turn.")
+    )
+
