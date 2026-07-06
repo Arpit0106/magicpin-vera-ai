@@ -116,3 +116,6 @@ class DecisionEngine:
         return resolved_actions
 
 decision_engine = DecisionEngine()
+from app.services.prompt_composer import PromptComposer
+
+composer = PromptComposer()
