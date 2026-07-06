@@ -9,7 +9,7 @@ class LLMClient:
         self.api_key = os.environ.get("OPENAI_API_KEY", "")
         self.model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
         self.endpoint = "https://api.openai.com/v1/chat/completions"
-        self.provider = os.environ.get("LLM_PROVIDER", "ollama").lower()
+        self.provider = os.environ.get("LLM_PROVIDER", "openai").lower()
 
     def complete(self, messages: List[Dict[str, str]], temperature: float = 0.0, max_tokens: int = 800) -> Optional[str]:
         """
