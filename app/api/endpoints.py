@@ -2,7 +2,6 @@ import time
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Response, status
 from typing import Any, Dict, List
-
 from app.models.schemas import (
     ContextPushRequest,
     ContextPushResponse,
@@ -41,12 +40,18 @@ async def metadata():
     """Bot metadata endpoint displaying team information and architecture approach."""
     return {
         "team_name": "Antigravity AI",
-        "team_members": ["Asus", "AI Architect"],
+        "team_members": [
+            "Arpit Raikwar",
+            "Solo Developer"
+        ],
         "model": "gpt-4o-mini",
-        "approach": "Clean architecture with a customized thread-safe context warehouse, a priority-based Decision Engine, an anti-taboo Prompt Composer with natural Hinglish code-mixing, and a multi-turn Reply Engine.",
-        "contact_email": "ai-engineer@example.com",
-        "version": "1.0.0",
-        "submitted_at": datetime.utcnow().isoformat() + "Z"
+        "approach": (
+            "Designed and implemented a FastAPI-based merchant assistant with "
+            "thread-safe context management, trigger prioritization, prompt composition, "
+            "conversation handling, and LLM-assisted message generation."
+        ),
+        "contact_email": "arpitraikwar0106@gmail.com",
+        "version": "1.0.0"
     }
 
 @router.post("/v1/context", response_model=Any)
@@ -61,7 +66,6 @@ async def push_context(body: ContextPushRequest, response: Response):
         version=body.version,
         payload=body.payload
     )
-    
     if not accepted:
         response.status_code = status.HTTP_409_CONFLICT
         return ContextPushConflictResponse(
@@ -113,7 +117,6 @@ async def tick(body: TickRequest):
             trigger_id=trigger_id,
             suppression_key=suppression_key
         )
-
         # Log bot message in tracker
         conversation_manager.add_message(conversation_id, send_as, composition["body"])
 
